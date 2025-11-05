@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, TYPE_CHECKING
+from typing import Callable, Optional, Tuple, TYPE_CHECKING
 
 import tcod.event
 
@@ -95,6 +95,32 @@ class EventHandler:
     
     def on_render(self, console: tcod.Console) -> None:
         self.engine.render(console)
+
+    def dispatch(self, event: tcod.event.Event) -> Optional[Action]:
+        """Default dispatch for common event types.
+
+        Routes Quit, MouseMotion, KeyDown and MouseButtonDown to the
+        corresponding handler methods so subclasses only need to implement
+        the specific handlers they care about (ev_keydown, ev_mousebuttondown,
+        ev_mousemotion, ev_quit).
+        """
+        if isinstance(event, tcod.event.Quit):
+            return self.ev_quit(event)
+        if isinstance(event, tcod.event.MouseMotion):
+            return self.ev_mousemotion(event)
+        if isinstance(event, tcod.event.KeyDown):
+            return self.ev_keydown(event)
+        if isinstance(event, tcod.event.MouseButtonDown):
+            return self.ev_mousebuttondown(event)
+        return None
+
+    def ev_keydown(self, event: tcod.event.KeyDown) -> Optional[Action]:
+        """Default keydown handler - subclasses can override."""
+        return None
+
+    def ev_mousebuttondown(self, event: tcod.event.MouseButtonDown) -> Optional[Action]:
+        """Default mouse button handler - subclasses can override."""
+        return None
     
 class MainGameEventHandler(EventHandler):
     def dispatch(self, event: tcod.event.Event) -> Optional[Action]:
@@ -317,14 +343,6 @@ class InventoryActivateHandler(InventoryEventHandler):
         """Return the action for the selected item."""
         return item.consumable.get_action(self.engine.player)
     
-    def dispatch(self, event: tcod.event.Event) -> Optional[Action]:
-        if isinstance(event, tcod.event.Quit):
-            raise SystemExit()
-        elif isinstance(event, tcod.event.KeyDown):
-            return self.ev_keydown(event)
-        elif isinstance(event, tcod.event.MouseButtonDown):
-            return self.ev_mousebuttondown(event)
-        return None
 
 
 class InventoryDropHandler(InventoryEventHandler):
@@ -335,14 +353,7 @@ class InventoryDropHandler(InventoryEventHandler):
     def on_item_selected(self, item: Item) -> Optional[Action]:
         """Drop this item."""
         return actions.DropItem(self.engine.player, item)
-    def dispatch(self, event: tcod.event.Event) -> Optional[Action]:
-        if isinstance(event, tcod.event.Quit):
-            raise SystemExit()
-        elif isinstance(event, tcod.event.KeyDown):
-            return self.ev_keydown(event)
-        elif isinstance(event, tcod.event.MouseButtonDown):
-            return self.ev_mousebuttondown(event)
-        return None
+    
 
 class SelectIndexHandler(AskUserEventHandler):
     """Handles asking the user for an index on the map."""
@@ -357,19 +368,19 @@ class SelectIndexHandler(AskUserEventHandler):
         """Highlight the tile under the cursor."""
         super().on_render(console)
         x, y = self.engine.mouse_location
-        console.tiles_rgb["bg"][x, y] = color.white
-        console.tiles_rgb["fg"][x, y] = color.black
+        console.rgb["bg"][x, y] = color.white
+        console.rgb["fg"][x, y] = color.black
 
     def ev_keydown(self, event: tcod.event.KeyDown) -> Optional[Action]:
         """Check for key movement or confirmation keys."""
         key = event.sym
         if key in MOVE_KEYS:
             modifier = 1  # Holding modifier keys will speed up key movement.
-            if event.mod & (tcod.event.KMOD_LSHIFT | tcod.event.KMOD_RSHIFT):
+            if event.mod & (tcod.event.Modifier.LSHIFT | tcod.event.Modifier.RSHIFT):
                 modifier *= 5
-            if event.mod & (tcod.event.KMOD_LCTRL | tcod.event.KMOD_RCTRL):
+            if event.mod & (tcod.event.Modifier.LCTRL | tcod.event.Modifier.RCTRL):
                 modifier *= 10
-            if event.mod & (tcod.event.KMOD_LALT | tcod.event.KMOD_RALT):
+            if event.mod & (tcod.event.Modifier.LALT | tcod.event.Modifier.RALT):
                 modifier *= 20
 
             x, y = self.engine.mouse_location
@@ -403,11 +414,50 @@ class LookHandler(SelectIndexHandler):
     def on_index_selected(self, x: int, y: int) -> None:
         """Return to main handler."""
         self.engine.event_handler = MainGameEventHandler(self.engine)
-    def dispatch(self, event: tcod.event.Event) -> Optional[Action]:
-        if isinstance(event, tcod.event.Quit):
-            raise SystemExit()
-        elif isinstance(event, tcod.event.KeyDown):
-            return self.ev_keydown(event)
-        elif isinstance(event, tcod.event.MouseButtonDown):
-            return self.ev_mousebuttondown(event)
-        return None
+    
+    
+class SingleRangedAttackHandler(SelectIndexHandler):
+    """Handles targeting a single enemy. Only the enemy selected will be affected."""
+
+    def __init__(
+        self, engine: Engine, callback: Callable[[Tuple[int, int]], Optional[Action]]
+    ):
+        super().__init__(engine)
+
+        self.callback = callback
+
+    def on_index_selected(self, x: int, y: int) -> Optional[Action]:
+        return self.callback((x, y))
+    
+class AreaRangedAttackHandler(SelectIndexHandler):
+    """Handles targeting an area within a given radius. Any entity within the area will be affected."""
+
+    def __init__(
+        self,
+        engine: Engine,
+        radius: int,
+        callback: Callable[[Tuple[int, int]], Optional[Action]],
+    ):
+        super().__init__(engine)
+
+        self.radius = radius
+        self.callback = callback
+
+    def on_render(self, console: tcod.Console) -> None:
+        """Highlight the tile under the cursor."""
+        super().on_render(console)
+
+        x, y = self.engine.mouse_location
+
+        # Draw a rectangle around the targeted area, so the player can see the affected tiles.
+        console.draw_frame(
+            x=x - self.radius - 1,
+            y=y - self.radius - 1,
+            width=self.radius ** 2,
+            height=self.radius ** 2,
+            fg=color.red,
+            clear=False,
+        )
+
+    def on_index_selected(self, x: int, y: int) -> Optional[Action]:
+        return self.callback((x, y))

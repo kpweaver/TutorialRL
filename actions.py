@@ -42,7 +42,6 @@ class PickupAction(Action):
         inventory = self.entity.inventory
 
         for item in self.engine.game_map.items:
-            print(item.x)
             if actor_location_x == item.x and actor_location_y == item.y:
                 if len(inventory.items) >= inventory.capacity:
                     raise exceptions.Impossible("Your inventory is full.")
